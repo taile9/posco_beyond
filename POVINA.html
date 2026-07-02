@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>POVINA Wake KIT — 인터페이스 시뮬레이터</title>
+<style>
+  :root{
+    --navy:#1c5aa8; --navy-dark:#123f7a;
+    --a-on:#2599e0; --b-on:#173f78;
+    --off-bg:#e8ecf1; --off-txt:#a7b0bd;
+    --scr-bg:#0d0f14;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; padding:24px 16px 60px;
+    font-family:'Malgun Gothic','Noto Sans CJK KR',sans-serif;
+    background:#f4f6f9; color:#1a1f27;
+    display:flex; flex-direction:column; align-items:center;
+  }
+  .brand{
+    background:linear-gradient(135deg,var(--navy),var(--navy-dark));
+    color:#fff; padding:14px 26px; border-radius:14px;
+    width:100%; max-width:420px; text-align:center; margin-bottom:18px;
+    box-shadow:0 4px 14px rgba(20,40,80,0.18);
+  }
+  .brand b{font-size:17px;}
+  .brand span{display:block; font-size:11.5px; opacity:.85; margin-top:3px;}
+
+  .device{
+    width:100%; max-width:420px; background:#fff; border-radius:20px;
+    padding:22px 20px 26px; box-shadow:0 6px 24px rgba(20,40,80,0.12);
+    border:1px solid #e5e9f0;
+  }
+  .crumb{
+    font-size:11px; color:#8a93a3; margin-bottom:10px; min-height:14px;
+    letter-spacing:.2px;
+  }
+  .screen{
+    background:var(--scr-bg); border-radius:10px; padding:16px 18px;
+    min-height:104px; box-shadow:inset 0 0 0 3px #24262c;
+  }
+  .screen div{
+    font-family:'Consolas','Courier New',monospace; color:#fff;
+    font-size:15px; line-height:1.7; white-space:pre;
+    min-height:1.2em;
+  }
+  .screen div:first-child{font-weight:700;}
+
+  .btnrow{display:flex; gap:14px; margin-top:20px;}
+  .btn{
+    flex:1; padding:16px 0; border-radius:12px; border:none;
+    font-size:17px; font-weight:700; color:#fff; cursor:pointer;
+    user-select:none; -webkit-user-select:none; transition:transform .05s;
+    position:relative;
+  }
+  .btn:active{transform:scale(0.97);}
+  .btn.a{background:var(--a-on);}
+  .btn.b{background:var(--b-on);}
+  .btn:disabled{background:var(--off-bg); color:var(--off-txt); cursor:default;}
+  .btn small{display:block; font-size:10px; font-weight:500; opacity:.85; margin-top:2px;}
+
+  .hint{
+    margin-top:12px; font-size:11.5px; color:#8a93a3; text-align:center; min-height:14px;
+  }
+
+  .reset{
+    margin-top:16px; width:100%; padding:10px; border-radius:10px; border:1px solid #dfe4ec;
+    background:#fff; color:#5a6472; font-size:12.5px; cursor:pointer;
+  }
+  .reset:hover{background:#f7f9fb;}
+
+  .footer{margin-top:16px; font-size:10.5px; color:#a3adba;}
+</style>
+</head>
+<body>
+
+<div class="brand">
+  <b>POVINA Wake KIT</b>
+  <span>인터페이스 시뮬레이터 — 전체 메뉴 트리</span>
+</div>
+
+<div class="device">
+  <div class="crumb" id="crumb"></div>
+  <div class="screen" id="screen"></div>
+  <div class="btnrow">
+    <button class="btn a" id="btnA">A</button>
+    <button class="btn b" id="btnB">B</button>
+  </div>
+  <div class="hint" id="hint"></div>
+  <button class="reset" id="resetBtn">🔄 처음(MAIN MENU)으로</button>
+</div>
+
+<div class="footer">POVINA Wake KIT · Simulator</div>
+
+<script>
+// ============ 데이터 (실제 .ino 코드 기준) ============
+const GESTURES = ["G1 CIRCLE","G2 FLIP","G3 SHAKE","G4 USER1","G5 USER2"];
+let sampleCount = [0,0,0,0,0];
+
+let appState = "MAIN";
+let busy = false; // 트랜지션 중 버튼 잠금
+
+let mainIndex = 0;
+let learnGestureIndex = 0;
+let learnActionIndex = 0;
+let learnMode = "add"; // 'add' | 'reset'
+let baseCountBeforeTemp = 0;
+let tempCount = 0;
+
+let timerMenuIndex = 0;
+let targetSelectIndex = 0;
+let targetGesture = 0;
+let setTimerSec = 0;
+
+let timerRemain = 0;
+let timerInterval = null;
+
+let bDownTime = 0;
+let bHoldTimer = null;
+const B_BACK_HOLD_MS = 1500;
+
+// ============ 유틸 ============
+function fmtHMS(sec){
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = sec%60;
+  const p = n => String(n).padStart(2,'0');
+  return `${p(h)}:${p(m)}:${p(s)}`;
+}
+function clearTimerInterval(){
+  if(timerInterval){ clearInterval(timerInterval); timerInterval=null; }
+}
+
+// ============ 화면 렌더 ============
+const screenEl = document.getElementById('screen');
+const crumbEl = document.getElementById('crumb');
+const hintEl = document.getElementById('hint');
+const btnA = document.getElementById('btnA');
+const btnB = document.getElementById('btnB');
+
+function setScreen(lines){
+  screenEl.innerHTML = '';
+  for(let i=0;i<4;i++){
+    const d = document.createElement('div');
+    d.textContent = lines[i] || '\u00A0';
+    screenEl.appendChild(d);
+  }
+}
+
+function setButtons(aOn, bOn, aLabel, bLabel){
+  btnA.disabled = !aOn || busy;
+  btnB.disabled = !bOn || busy;
+  btnA.textContent = aLabel || 'A';
+  btnB.textContent = bLabel || 'B';
+}
+
+function setCrumb(text){ crumbEl.textContent = text; }
+function setHint(text){ hintEl.textContent = text || ''; }
+
+// ============ 트랜지션(자동 진행) 화면 ============
+function showTransient(lines, ms, next){
+  busy = true;
+  setButtons(false, false);
+  setHint('');
+  setScreen(lines);
+  setTimeout(()=>{ busy = false; next(); }, ms);
+}
+
+// ============ 메인 렌더 디스패처 ============
+function render(){
+  clearTimerInterval();
+
+  if(appState === 'MAIN'){
+    setCrumb('MAIN MENU');
+    const lines = mainIndex===0
+      ? ["MAIN MENU","> LEARN","  TIMER","A:Next B:OK"]
+      : mainIndex===1
+      ? ["MAIN MENU","  LEARN","> TIMER","A:Next B:OK"]
+      : ["MAIN MENU","> CLEAR DATA","Delete all learned","A:Next B:OK"];
+    setScreen(lines);
+    setButtons(true, true);
+    setHint('A: 다음 항목 · B: 선택');
+    return;
+  }
+
+  if(appState === 'LEARN_SELECT'){
+    setCrumb('MAIN > LEARN');
+    if(learnGestureIndex < 5){
+      setScreen(["LEARN","> "+GESTURES[learnGestureIndex],"Samples: "+sampleCount[learnGestureIndex],"A:Next B:OK"]);
+    } else {
+      setScreen(["LEARN","> BACK","","A:Next B:OK"]);
+    }
+    setButtons(true, true);
+    setHint('A: G1~G5/BACK 이동 · B: 선택');
+    return;
+  }
+
+  if(appState === 'LEARN_ACTION'){
+    setCrumb('MAIN > LEARN > '+GESTURES[learnGestureIndex]);
+    const options = ["ADD DATA","RESET DATA","BACK"];
+    setScreen([GESTURES[learnGestureIndex], "> "+options[learnActionIndex], "Samples: "+sampleCount[learnGestureIndex], "A:Next B:OK"]);
+    setButtons(true, true);
+    setHint('A: 다음 항목 · B: 선택');
+    return;
+  }
+
+  if(appState === 'LEARN_RECORD'){
+    setCrumb('MAIN > LEARN > '+GESTURES[learnGestureIndex]+' > '+(learnMode==='reset'?'RESET DATA':'ADD DATA'));
+    const modeText = learnMode==='reset' ? "RESET MODE" : "ADD MODE";
+    const countText = learnMode==='reset' ? ("New: "+tempCount) : (baseCountBeforeTemp+" + "+tempCount);
+    setScreen([modeText, countText, "A:Record 1s", "B:Save HoldB:Back"]);
+    setButtons(true, true);
+    setHint('A: 1초 녹화 · B 짧게: 저장 · B 길게(1.5초): 저장없이 뒤로');
+    return;
+  }
+
+  if(appState === 'TIMER_MENU'){
+    setCrumb('MAIN > TIMER');
+    const options = ["+3 SEC","+1 MIN","+5 MIN","+30 MIN","TARGET","START","RESET","BACK"];
+    setScreen(["TIMER","> "+options[timerMenuIndex],"Total "+fmtHMS(setTimerSec),"Target G"+(targetGesture+1)]);
+    setButtons(true, true);
+    setHint('A: 다음 항목 · B: 선택/실행');
+    return;
+  }
+
+  if(appState === 'TARGET_SELECT'){
+    setCrumb('MAIN > TIMER > TARGET');
+    if(targetSelectIndex < 5){
+      setScreen(["SELECT TARGET","> "+GESTURES[targetSelectIndex],"Samples: "+sampleCount[targetSelectIndex],"A:Next B:OK"]);
+    } else {
+      setScreen(["SELECT TARGET","> BACK","","A:Next B:OK"]);
+    }
+    setButtons(true, true);
+    setHint('A: G1~G5/BACK 이동 · B: 선택');
+    return;
+  }
+
+  if(appState === 'CLEAR_CONFIRM'){
+    setCrumb('MAIN > CLEAR DATA');
+    setScreen(["CLEAR ALL DATA?","All gestures","A:Cancel","B:Yes"]);
+    setButtons(true, true, 'A', 'B');
+    setHint('A: 취소 · B: 전체 삭제');
+    return;
+  }
+
+  if(appState === 'TIMER_RUNNING'){
+    setCrumb('MAIN > TIMER > START');
+    setScreen(["Timer Run","Left "+fmtHMS(timerRemain),"Target G"+(targetGesture+1),"A+B 5s Stop"]);
+    setButtons(false, false);
+    setHint('실행 중 (트리 상 leaf 상태) · 아래 버튼으로 리셋하세요');
+    timerInterval = setInterval(()=>{
+      timerRemain--;
+      if(timerRemain <= 0){
+        clearTimerInterval();
+        showTransient(["Time Up!","Do G"+(targetGesture+1),GESTURES[targetGesture],"(트리 범위 밖)"], 1200, ()=>{
+          appState='MAIN'; mainIndex=0; render();
+        });
+        return;
+      }
+      setScreen(["Timer Run","Left "+fmtHMS(timerRemain),"Target G"+(targetGesture+1),"A+B 5s Stop"]);
+    }, 1000);
+    return;
+  }
+}
+
+// ============ 상태 전이 로직 ============
+function goMain(){ clearTimerInterval(); appState='MAIN'; mainIndex=0; render(); }
+
+function onMainA(){ mainIndex=(mainIndex+1)%3; render(); }
+function onMainB(){
+  if(mainIndex===0){ appState='LEARN_SELECT'; learnGestureIndex=0; render(); }
+  else if(mainIndex===1){ appState='TIMER_MENU'; timerMenuIndex=0; render(); }
+  else { appState='CLEAR_CONFIRM'; render(); }
+}
+
+function onLearnSelectA(){ learnGestureIndex=(learnGestureIndex+1)%6; render(); }
+function onLearnSelectB(){
+  if(learnGestureIndex===5){ goMain(); }
+  else { appState='LEARN_ACTION'; learnActionIndex=0; render(); }
+}
+
+function onLearnActionA(){ learnActionIndex=(learnActionIndex+1)%3; render(); }
+function onLearnActionB(){
+  if(learnActionIndex===0) startLearnRecord('add');
+  else if(learnActionIndex===1) startLearnRecord('reset');
+  else { appState='LEARN_SELECT'; render(); }
+}
+function startLearnRecord(mode){
+  learnMode = mode;
+  baseCountBeforeTemp = mode==='reset' ? 0 : sampleCount[learnGestureIndex];
+  tempCount = 0;
+  appState = 'LEARN_RECORD';
+  render();
+}
+
+function onLearnRecordA(){
+  showTransient(["Recording...", GESTURES[learnGestureIndex], "Wait 1 sec", ""], 900, ()=>{
+    tempCount++;
+    const countText = learnMode==='reset' ? ("New: "+tempCount) : (baseCountBeforeTemp+" + "+tempCount);
+    showTransient(["Saved Temp", countText, GESTURES[learnGestureIndex], ""], 650, ()=>{
+      appState='LEARN_RECORD'; render();
+    });
+  });
+}
+function onLearnRecordSave(){
+  if(tempCount<=0){
+    showTransient(["No New Data","Record first","",""], 700, ()=>{ appState='LEARN_RECORD'; render(); });
+    return;
+  }
+  if(learnMode==='reset'){ sampleCount[learnGestureIndex]=0; }
+  sampleCount[learnGestureIndex] = Math.min(40, sampleCount[learnGestureIndex]+tempCount);
+  tempCount = 0;
+  showTransient(["Saved!","Total: "+sampleCount[learnGestureIndex],"Flash Saved",GESTURES[learnGestureIndex]], 800, ()=>{
+    appState='LEARN_ACTION'; render();
+  });
+}
+function onLearnRecordBackNoSave(){
+  tempCount = 0;
+  appState = 'LEARN_ACTION';
+  render();
+}
+
+function onTimerMenuA(){ timerMenuIndex=(timerMenuIndex+1)%8; render(); }
+function onTimerMenuB(){
+  const MAX = 12*3600;
+  if(timerMenuIndex===0 || timerMenuIndex===1 || timerMenuIndex===2 || timerMenuIndex===3){
+    const add = [3, 60, 300, 1800][timerMenuIndex];
+    if(setTimerSec + add > MAX){
+      setTimerSec = MAX;
+      showTransient(["Max 12H","Total "+fmtHMS(setTimerSec),"",""], 600, ()=>{ appState='TIMER_MENU'; render(); });
+    } else {
+      setTimerSec += add;
+      render();
+    }
+  } else if(timerMenuIndex===4){
+    appState='TARGET_SELECT'; targetSelectIndex=targetGesture; render();
+  } else if(timerMenuIndex===5){
+    if(setTimerSec===0){
+      showTransient(["Set Time First","","",""], 600, ()=>{ appState='TIMER_MENU'; render(); });
+      return;
+    }
+    if(sampleCount[targetGesture]<=0){
+      showTransient(["No Data",GESTURES[targetGesture],"Learn first",""], 800, ()=>{ appState='TIMER_MENU'; render(); });
+      return;
+    }
+    appState='TIMER_RUNNING'; timerRemain=setTimerSec; render();
+  } else if(timerMenuIndex===6){
+    setTimerSec = 0;
+    showTransient(["Time Reset","Total 00:00:00","",""], 450, ()=>{ appState='TIMER_MENU'; render(); });
+  } else {
+    goMain();
+  }
+}
+
+function onTargetSelectA(){ targetSelectIndex=(targetSelectIndex+1)%6; render(); }
+function onTargetSelectB(){
+  if(targetSelectIndex===5){ appState='TIMER_MENU'; render(); return; }
+  targetGesture = targetSelectIndex;
+  showTransient(["Target Set", GESTURES[targetGesture], "Color G"+(targetGesture+1), ""], 650, ()=>{
+    appState='TIMER_MENU'; render();
+  });
+}
+
+function onClearConfirmA(){ goMain(); }
+function onClearConfirmB(){
+  showTransient(["Clearing...","Please wait","",""], 500, ()=>{
+    sampleCount = [0,0,0,0,0];
+    showTransient(["All Data Clear","Samples: 0","Flash Cleared",""], 800, ()=>{
+      goMain();
+    });
+  });
+}
+
+// ============ 버튼 이벤트 바인딩 ============
+btnA.addEventListener('click', ()=>{
+  if(busy || btnA.disabled) return;
+  if(appState==='MAIN') onMainA();
+  else if(appState==='LEARN_SELECT') onLearnSelectA();
+  else if(appState==='LEARN_ACTION') onLearnActionA();
+  else if(appState==='LEARN_RECORD') onLearnRecordA();
+  else if(appState==='TIMER_MENU') onTimerMenuA();
+  else if(appState==='TARGET_SELECT') onTargetSelectA();
+  else if(appState==='CLEAR_CONFIRM') onClearConfirmA();
+});
+
+function bPressStart(){
+  if(busy || btnB.disabled) return;
+  bDownTime = Date.now();
+  if(appState==='LEARN_RECORD'){
+    bHoldTimer = setTimeout(()=>{
+      setScreen(["Release B","to go BACK","",""]);
+      setHint('B를 떼면 저장 없이 뒤로 이동해요');
+    }, B_BACK_HOLD_MS);
+  }
+}
+function bPressEnd(){
+  if(busy) return;
+  const held = Date.now() - bDownTime;
+  if(bHoldTimer){ clearTimeout(bHoldTimer); bHoldTimer=null; }
+  if(btnB.disabled) return;
+
+  if(appState==='LEARN_RECORD'){
+    if(held >= B_BACK_HOLD_MS) onLearnRecordBackNoSave();
+    else onLearnRecordSave();
+    return;
+  }
+  if(appState==='MAIN') onMainB();
+  else if(appState==='LEARN_SELECT') onLearnSelectB();
+  else if(appState==='LEARN_ACTION') onLearnActionB();
+  else if(appState==='TIMER_MENU') onTimerMenuB();
+  else if(appState==='TARGET_SELECT') onTargetSelectB();
+  else if(appState==='CLEAR_CONFIRM') onClearConfirmB();
+}
+btnB.addEventListener('mousedown', bPressStart);
+btnB.addEventListener('touchstart', (e)=>{ e.preventDefault(); bPressStart(); });
+btnB.addEventListener('mouseup', bPressEnd);
+btnB.addEventListener('mouseleave', ()=>{ if(bHoldTimer){clearTimeout(bHoldTimer); bHoldTimer=null;} });
+btnB.addEventListener('touchend', (e)=>{ e.preventDefault(); bPressEnd(); });
+
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  clearTimerInterval();
+  sampleCount=[0,0,0,0,0];
+  mainIndex=0; learnGestureIndex=0; learnActionIndex=0; learnMode='add';
+  baseCountBeforeTemp=0; tempCount=0;
+  timerMenuIndex=0; targetSelectIndex=0; targetGesture=0; setTimerSec=0;
+  busy=false;
+  goMain();
+});
+
+// ============ 시작 ============
+render();
+</script>
+</body>
+</html>
